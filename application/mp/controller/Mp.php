@@ -88,6 +88,34 @@ class Mp extends Base
                 break;
 
         }
+        $search_type = Session::get('search_type');
+        $search_type = $search_type ? $search_type : 1;
+        if (Request::isAjax() && Request::isPost()) {
+            $search_type = input('search_type');
+            Session::set('search_type', $search_type);
+        }
+        if (input('keyword')) {
+            if (input('search_type') == 1) {
+                $result = Db::name('mp_rule')->alias('r')
+                    ->where(['r.mpid' => $this->mid])
+                    ->where('r.type', 'neq', '')
+                    ->where('r.keyword', 'like', '%' . input('keyword') . '%')
+                    ->order('r.id DESC')
+                    ->paginate(10, false, ['query' => ['keyword' => input('keyword'), 'search_type' => input('search_type')]]);
+                $this->assign('data', $result);
+                $this->assign('type', 'search');
+            } else {
+                $result = Db::name('mp_rule')->alias('r')
+                    ->where(['r.mpid' => $this->mid, 'r.type' => $type])
+                    ->where('r.keyword', 'like', '%' . input('keyword') . '%')
+                    ->join('__MP_REPLY__ p', 'p.reply_id=r.reply_id')
+                    ->order('r.id DESC')
+                    ->paginate(10, false, ['query' => ['keyword' => input('keyword'), 'search_type' => input('search_type')]]);
+                $this->assign('data', $result);
+                $this->assign('type', $type);
+            }
+        }
+        $this->assign('search_type', $search_type);
         return view('autoreply');
     }
 
@@ -877,6 +905,9 @@ class Mp extends Base
                     case 'unidentified':
                         $this->doSpecial('unidentified', $td);
                         break;
+                    case 'card':
+                        $this->doSpecial('card', $td);
+                        break;
                 }
             }
             ajaxMsg('1', '保存成功');
@@ -895,6 +926,7 @@ class Mp extends Base
                 '8' => 'subscribe',
                 '9' => 'unsubscribe',
                 '10' => 'unidentified',
+                '11' => 'card',
             ];
             foreach ($where as $key => $v) {
                 $result = Db::name('mp_rule')
@@ -964,6 +996,7 @@ class Mp extends Base
         $mid = Session::get('mid');
         $list = Db::name('mp_menu')
             ->where(['mp_id' => $mid, 'pindex' => 0])
+            ->order('sort ASC')
             ->select();
 
         $data = [];
@@ -972,6 +1005,7 @@ class Mp extends Base
             foreach ($list as $key => $item) {
                 $list[$key]['sub'] = Db::name('mp_menu')
                     ->where(['mp_id' => $mid, 'pindex' => $item['index']])
+                    ->order('sort ASC')
                     ->select();
             }
             $data['list'] = $list;
@@ -1120,15 +1154,10 @@ class Mp extends Base
                         'apiclient_key' => '',
                         'setting_name' => '',
                     ];
-//                    if (empty($result)) {
-//                        $config = $arr1;
-//                    } else {
-//                        $config = diffArrayValue($arr1, json_decode($result['value'], true));
-//                    }
                     $array = json_decode($result['value'], true);
                     $arr2 = $array ? $array : [];
                     $config = array_merge($arr1, $arr2);
-                    $this->assign('payUrl', getHostDomain() . Url::build('service/Payment/wxPay', '', false));
+                    $this->assign('payUrl', getHostDomain().'/');
                     $this->assign('config', $config);
                     break;
                 case 'uploadjsfile':
@@ -1750,6 +1779,8 @@ class Mp extends Base
             $wxObj = getWechatActiveObj($this->mid);
             $result = $wxObj->sendGroupMassMessage($data);
             if ($result && isset($result['errcode']) && $result['errcode'] == 0) {
+                Db::name('media_news')->where(['mid' => $this->mid, 'news_id' => $news_id])
+                    ->update(['status_type'=>3]);
                 ajaxMsg(1, '群发成功');
             } else {
                 ajaxMsg(0, '群发失败，错误码：' . $wxObj->errCode . ' 错误内容：' . $wxObj->errMsg);

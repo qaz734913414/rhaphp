@@ -30,7 +30,7 @@ class Friends extends Base
         $nickname = '';
         $times = '';
         $need = '';
-        $sex = '';
+        $sex = '-1';
         if (Request::isGet()) {
             $_data = input('get.');
             $nickname = isset($_data['nickname']) ? $_data['nickname'] : '';
@@ -50,8 +50,8 @@ class Friends extends Base
                 $where[] = ['last_time', '>', (time() - (86400 * 2))];
                 $need = 1;
             }
-            if (isset($_data['sex']) && $_data['sex'] != 0) {
-                $sex = $_data['sex'] ? $_data['sex'] : '0';
+            if (isset($_data['sex']) && $_data['sex'] > 0) {
+                $sex = $_data['sex'] ? $_data['sex'] : -1;
                 $where[] = ['sex', '=', $_data['sex']];
             }
         }
@@ -61,7 +61,7 @@ class Friends extends Base
         $post['sex'] = $sex;
         $FriendList = MpFriends::where(['mpid' => $this->mid, 'subscribe' => 1])
             ->where($where)
-            ->order('subscribe_time DESC')->paginate(20);
+            ->order('subscribe_time DESC')->paginate(20,false,['query'=>input()]);
         $this->assign('friendList', $FriendList);
         $this->assign('post', $post);
         return view();
@@ -78,9 +78,12 @@ class Friends extends Base
         $next_openid = isset($IN['next_openid']) ? $IN['next_openid'] : null;
         $wechatObj = getWechatActiveObj();
         $table = config('database.prefix') . 'syn_openid';
-        $sql = "DELETE FROM {$table} WHERE openid IN (SELECT * FROM(SELECT openid FROM {$table} WHERE mpid = {$this->mid}  GROUP BY openid HAVING COUNT(openid) > 1) AS b) AND id NOT IN (SELECT * FROM (SELECT MIN(id) FROM {$table} WHERE mpid = {$this->mid}  GROUP BY openid HAVING COUNT(openid) > 1) AS c)";
+        $sql = "DELETE FROM {$table} WHERE openid IN (SELECT * FROM(SELECT openid FROM {$table} WHERE mpid = ".intval($this->mid)." GROUP BY openid HAVING COUNT(openid) > 1) AS b) AND id NOT IN (SELECT * FROM (SELECT MIN(id) FROM {$table} WHERE mpid = ".intval($this->mid)."  GROUP BY openid HAVING COUNT(openid) > 1) AS c)";
         Db::execute($sql);
-        $opneidTotal = Db::name('syn_openid')->where('mpid', '=', $this->mid)->count('distinct(openid)');
+        $opneidTotal = Db::name('syn_openid')->where('mpid', '=', $this->mid)
+            ->distinct(true)
+            ->field('openid')
+            ->count();
         $friendTotal = session($this->mid . 'friendTotal');
         if ($opneidTotal >= $friendTotal  && $friendTotal >0) {
             $synOpenids = Db::name('syn_openid')->where('mpid', '=', $this->mid)

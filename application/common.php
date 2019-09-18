@@ -236,9 +236,13 @@ function loadAdApi($name = null, $msg = [], $param = [])
     if ($_addon['status'] != 1) replyText('Application has been withdrawn or not installed');
     session('apiParam', $param);
     $filename = ADDON_PATH . $name . '/controller/Api.php';
+    $commonFile = ADDON_PATH . $name . '/Common.php';
+    if (file_exists($commonFile)) {
+        include_once $commonFile;
+    }
     session('addonName', $name);
     if (file_exists($filename)) {
-        include_once ADDON_PATH . $name . "/controller/Api.php";
+        include_once $filename;
         $class = '\addons\\' . $name . '\controller\Api';
         if (class_exists($class)) {
             $apiObj = new $class;
@@ -529,7 +533,6 @@ function getAddonConfigByFile($name = '', $key = '')
     } else {
         return false;
     }
-
 }
 
 function getAdmin()
@@ -537,19 +540,10 @@ function getAdmin()
     if (empty(session('admin')) && empty(cookie('admin'))) {
         return false;
     } else {
-
         $arr1 = session('admin') ? session('admin') : [];
         $arr2 = cookie('admin') ? cookie('admin') : [];
-        $_admin = array_merge($arr1, $arr2);
-        $where = [
-            ['id', '=', $_admin['id']],
-            ['status', '=', 1]
-        ];
-        return \think\Db::name('admin')->where($where)
-            ->cache('ststemAdmin')->find();
+        return $_admin = array_merge($arr1, $arr2);
     }
-
-
 }
 
 /**
@@ -885,6 +879,7 @@ function httpGet($url)
 
 function httpPost($url, $data, $curlFile = false)
 {
+
     if ($curlFile == true) {
         $data = json_decode($data, true);
         if (is_array($data)) {
@@ -904,7 +899,7 @@ function httpPost($url, $data, $curlFile = false)
     curl_setopt($cl, CURLOPT_HEADER, false);
     curl_setopt($cl, CURLOPT_POST, true);
     curl_setopt($cl, CURLOPT_TIMEOUT, 60);
-    curl_setopt($cl, CURLOPT_POSTFIELDS, $data);
+    curl_setopt($cl, CURLOPT_POSTFIELDS, http_build_query($data));
     list($content, $status) = array(curl_exec($cl), curl_getinfo($cl), curl_close($cl));
     return (intval($status["http_code"]) === 200) ? $content : false;
 }
@@ -1099,6 +1094,30 @@ function xml_to_array($xml)
     } else {
         return $xml;
     }
+}
+
+/**
+ * 数组转XML
+ * @param $array
+ * @return string
+ * @throws \think\Exception
+ */
+function array_to_xml($array)
+{
+    if (!is_array($array)) {
+        throw new \think\Exception("参数不是数组！");
+    }
+
+    $xml = "<xml>";
+    foreach ($array as $key => $val) {
+        if (is_numeric($val)) {
+            $xml .= "<" . $key . ">" . $val . "</" . $key . ">";
+        } else {
+            $xml .= "<" . $key . "><![CDATA[" . $val . "]]></" . $key . ">";
+        }
+    }
+    $xml .= "</xml>";
+    return $xml;
 }
 
 /**
@@ -1437,7 +1456,7 @@ function getStrings($array = [])
  */
 function getHttpType()
 {
-    return $type = ((isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] == 'on') || (isset($_SERVER['HTTP_X_FORWARDED_PROTO']) && $_SERVER['HTTP_X_FORWARDED_PROTO'] == 'https')) ? 'https://' : 'http://';
+    return \think\facade\Request::scheme().'://';
 }
 
 /**
@@ -1483,19 +1502,22 @@ function getMember($member_id = '')
         if (!$mid = input('mid')) {
             exit('公众号标识mid不存在');
         }
-        $c = cookie('member_' . $mid) ? cookie('member_' . $mid) : [];
-        $s = session('member_' . $mid) ? session('member_' . $mid) : [];
-        $member = array_merge($c, $s);
+        //2018-11-03起 取消会员信息存入COOKIE中
+        //$c = cookie('member_' . $mid) ? cookie('member_' . $mid) : [];
+        //$s = session('member_' . $mid) ? session('member_' . $mid) : [];
+        //$member = array_merge($c, $s);
+        $member = session('member_' . $mid) ? session('member_' . $mid) : [];
     }
     if (!empty($member)) {
         $group = \think\Db::name('member_group')->where(['mpid' => $member['mpid']])->order('up_score ASC,up_money ASC,discount ASC')->select();
         $group_id = '0';
         $group_name = '';
         if (!empty($group)) {
-            $model = new \app\common\model\MemberWealthRecord();
-            $score = $model->getMemberScoreBySum($member['id'], $member['mpid']);
-            $money = $model->getMemberMoneyBySum($member['id'], $member['mpid']);
-
+            //$model = new \app\common\model\MemberWealthRecord();
+            //$score = $model->getMemberScoreBySum($member['id'], $member['mpid']);
+            //$money = $model->getMemberMoneyBySum($member['id'], $member['mpid']);
+            $score = $member['group_score'];
+            $money = $member['group_money'];
             foreach ($group as $key => $val) {
                 if ($val['up_type'] == '0') {
                     if ($score >= $val['up_score'] || $money >= $val['up_money']) {
@@ -1644,7 +1666,9 @@ function WxPayRefundQuery($parment_id)
 function queryOrder($order_number = '')
 {
     $paymentModel = new \app\common\model\Payment();
-    if (!$payment = $paymentModel->getPaymentByFind(['order_number' => $order_number])) {
+    $paymentModel->startTrans();
+    if (!$payment = $paymentModel->where('order_number', $order_number)->lock(true)->find()) {
+        $paymentModel->rollback();
         return ['errCode' => -1, 'errMsg' => '交易单号不存在'];
     }
     if (setWxpayConfig($payment['mpid'])) {
@@ -1655,31 +1679,39 @@ function queryOrder($order_number = '')
         if (!empty($orderRes)) {
             if (isset($orderRes['trade_state']) && $orderRes['trade_state'] == 'SUCCESS') {//已经支付
                 if ($payment['status'] == '0') {//订单状态未处理为成功
-                    $model = new \app\common\model\MemberWealthRecord();
-                    if ($model->addMoney($payment['member_id'], $payment['mpid'], $payment['money'], $payment['title'])) {
-                        if (!$paymentModel->save(['status' => 1], ['order_number' => $order_number])) {
-                            return ['errCode' => -1, 'errMsg' => '改变订单状态失败'];
+                    $C_lk = \think\facade\Cache::get($order_number);
+                    if (empty($C_lk)) {
+                        \think\facade\Cache::set($order_number, '1');
+                        if ($paymentModel->where(['mpid' => $payment['mpid'], 'order_number' => $order_number])->update(['status' => 1])) {
+                            \think\facade\Cache::rm($order_number);
+                            $paymentModel->commit();
+                            return ['errCode' => 'ok', 'errMsg' => '交易完成'];
+                        } else {
+                            \think\facade\Cache::rm($order_number);
+                            $paymentModel->rollback();
                         }
-                        return ['errCode' => 'ok', 'errMsg' => '交易完成'];
-                    } else {
-                        return ['errCode' => -1, 'errMsg' => '改变账户金额失败'];
                     }
                 } else {
+                    $paymentModel->rollback();
                     return ['errCode' => 'ok', 'errMsg' => '交易完成'];
                 }
             } else {
+                $paymentModel->rollback();
                 return ['errCode' => -1, 'errMsg' => '未完成交易'];
             }
         } else {
+            $paymentModel->rollback();
             return ['errCode' => -1, 'errMsg' => '交易单号不存在'];
         }
     }
+    $paymentModel->rollback();
     return ['errCode' => -1, 'errMsg' => '没有公众号配置信息'];
 }
 
 /**
  * 微信支付回调
- * @return bool
+ * @return bool|xml
+ * @throws \think\Exception
  */
 function wxpayNotify()
 {
@@ -1694,8 +1726,37 @@ function wxpayNotify()
                 && isset($array['openid'])
                 && isset($array['mch_id'])
             ) {
-                queryOrder($array['out_trade_no']);
-                // file_put_contents('ok.txt', json_encode($array));
+                $paymentModel = new \app\common\model\Payment();
+                if (!$payment = $paymentModel->getPaymentByFind(['order_number' => $array['out_trade_no']])) {
+                    $data = ['return_code' => 'FAIL', 'return_msg' => '定单号不存在'];
+                } else {
+                    try {
+                        setWxpayConfig($payment['mpid']);
+                        \WxPayResults::Init($xml);
+                        $result = queryOrder($array['out_trade_no']);
+                        if ($result['errCode'] == 'ok') {
+                            if ($payment['callback'] && $payment['callback_status'] == 0) {
+                                $param = json_decode(json_encode($payment), true);
+                                $param['notify_data'] = $array;
+                                if ($callbackResult = httpPost(\think\facade\Request::domain() . $payment['callback'], $param)) {
+                                    $CBarray = json_decode($callbackResult, true);
+                                    if (!isset($CBarray['errCode']) || $CBarray['errCode'] != 0) {
+                                        return false;
+                                    }
+                                } else {
+                                    return false;
+                                }
+                            }
+                            \app\common\model\Payment::setCallbackStatus($payment['payment_id']);
+                            $data = ['return_code' => 'SUCCESS', 'return_msg' => 'OK'];
+                        } else {
+                            $data = ['return_code' => 'FAIL', 'return_msg' => $result['errMsg']];
+                        }
+                    } catch (\Exception $exception) {
+                        $data = ['return_code' => 'FAIL', 'return_msg' => $exception->getMessage()];
+                    }
+                }
+                echo array_to_xml($data);
             }
         }
     }
@@ -1703,10 +1764,13 @@ function wxpayNotify()
 
 function unClient($mid = '')
 {
-    $sslcert = ROOT_PATH . 'data/' . $mid . '_' . '_apiclient_cert.pem';
-    $sslkey = ROOT_PATH . 'data/' . $mid . '_' . '_apiclient_key.pem';
-    @unlink($sslcert);
-    @unlink($sslkey);
+    try {
+        $sslcert = ROOT_PATH . 'data/' . $mid . '_' . '_apiclient_cert.pem';
+        $sslkey = ROOT_PATH . 'data/' . $mid . '_' . '_apiclient_key.pem';
+        @unlink($sslcert);
+        @unlink($sslkey);
+    } catch (\ErrorException $exception) {
+    }
 }
 
 /**
@@ -2048,7 +2112,7 @@ function getWxPayUrl($mid = '', $param = [])
 function setMpKeywordByNews($keyword = '', $title = '', $picurl = '', $desc = '', $link = '')
 {
     $mp = getMpInfo();
-    if (!$keyword || !$title || !$picurl || !$desc || !$link || !isset($mp['id'])) {
+    if (!$keyword || !$title || !$picurl || !$link || !isset($mp['id'])) {
         return false;//['status'=>0,'msg'=>'参数缺失'];
     }
     $data['mpid'] = $mp['id'];
@@ -2237,4 +2301,79 @@ function getThumb($file_path, $type = 1)
 
     return getHostDomain() . DS . $file;
 
+}
+
+/**
+ * 发送模板消息
+ * @param array $data 消息结构
+ * ｛
+ * "touser":"OPENID",
+ * "template_id":"ngqIpbwh8bUfcSsECmogfXcV14J0tQlEpBO27izEYtY",
+ * "url":"http://weixin.qq.com/download",
+ * "topcolor":"#FF0000",
+ * "data":{
+ * "参数名1": {
+ * "value":"参数",
+ * "color":"#173177"     //参数颜色
+ * },
+ * "Date":{
+ * "value":"06月07日 19时24分",
+ * "color":"#173177"
+ * },
+ * "CardNumber":{
+ * "value":"0426",
+ * "color":"#173177"
+ * },
+ * "Type":{
+ * "value":"消费",
+ * "color":"#173177"
+ * }
+ * }
+ * }
+ * @return boolean|array
+ */
+function sendTemplateMessage($data = [])
+{
+    $wxObj = getWechatActiveObj();
+    $result = $wxObj->sendTemplateMessage($data);
+    if (isset($result['errcode']) && $result['errcode'] == '0') {
+        return $result;
+    }
+    if ($msg = wxApiResultErrorCode($wxObj->errCode)) {
+        return ['errcode' => -1, 'errmsg' => $msg];
+    }
+    return ['errcode' => -1, 'errmsg' => ' errCode:' . $wxObj->errCode . ' errMsg:' . $wxObj->errMsg];
+
+}
+
+function getRuleTypeName($type)
+{
+    switch ($type) {
+        case 'text':
+            return '回复文本';
+            break;
+        case 'news':
+            return '回复图文';
+            break;
+        case 'addon':
+            return '触发应用';
+            break;
+        case 'voice':
+            return '回复语音';
+            break;
+        case 'image':
+            return '回复图片';
+            break;
+        case 'video':
+            return '回复视频';
+            break;
+        case 'music':
+            return '回复音乐';
+            break;
+        case 'multi_news':
+            return '回复多图文';
+            break;
+        default:
+            return '未知';
+    }
 }

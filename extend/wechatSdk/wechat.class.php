@@ -162,6 +162,7 @@ class Wechat
     const CARD_CODE_DECRYPT = '/card/code/decrypt?';
     const CARD_CODE_GET = '/card/code/get?';
     const CARD_CODE_UPDATE = '/card/code/update?';
+    const CARD_MEMBERCARD_USERINFO_GET = '/card/membercard/userinfo/get?';//拉取会员信息（积分查询）接口
     const CARD_CODE_UNAVAILABLE = '/card/code/unavailable?';
     const CARD_TESTWHILELIST_SET = '/card/testwhitelist/set?';
     const CARD_MEETINGCARD_UPDATEUSER = '/card/meetingticket/updateuser?';    //更新会议门票
@@ -1219,7 +1220,7 @@ class Wechat
     protected function setCache($cachename, $value, $expired)
     {
         //cache($cachename,$value,$expired);
-        $path = \think\facade\Env::get('runtime_path') . 'cache/';
+        $path =\think\facade\Config::get('cache.path');
         $file = $path . $cachename . '.php';
         $fp = fopen($file, "w");
         fwrite($fp, "<?php exit();?>" . json_encode(['value' => $value, 'time' => time() + $expired]));
@@ -1235,7 +1236,7 @@ class Wechat
     protected function getCache($cachename)
     {
         // return cache($cachename);
-        $path = \think\facade\Env::get('runtime_path') . 'cache/';
+        $path =\think\facade\Config::get('cache.path');
         $file = $path . $cachename . '.php';
         if(!file_exists($file)){
             return false;
@@ -1394,34 +1395,56 @@ class Wechat
 
     /**
      * 获取卡券签名cardSign
-     * @param string $card_type 卡券的类型，不可为空，官方jssdk文档说这个值可空，但签名验证工具又必填这个值，官方文档到处是坑，
-     * @param string $card_id 卡券的ID，可空
-     * @param string $location_id 卡券的适用门店ID，可空
+     * @param array $arr 参与签名cardExt参数 code|openid|card_id|catd_type
      * @param string $timestamp 当前时间戳 (为空则自动生成)
      * @param string $noncestr 随机串 (为空则自动生成)
      * @param string $appid 用于多个appid时使用,可空
      * @return array|bool 返回签名字串
      */
-    public function getCardSign($card_type = '', $card_id = '', $code = '', $location_id = '', $timestamp = 0, $noncestr = '', $appid = '')
+    public function getCardSign($arr = [], $timestamp = 0, $noncestr = '', $appid = '')
     {
         if (!$this->api_ticket && !$this->getJsCardTicket($appid)) return false;
         if (!$timestamp)
             $timestamp = time();
         if (!$noncestr)
             $noncestr = $this->generateNonceStr();
-        $arrdata = array("api_ticket" => $this->api_ticket, "app_id" => $this->appid, "card_id" => $card_id, "code" => $code, "card_type" => $card_type, "location_id" => $location_id, "timestamp" => $timestamp, "noncestr" => $noncestr);
-        $sign = $this->getTicketSignature($arrdata);
+        $arr['api_ticket'] = $this->api_ticket;
+        $arr['timestamp'] = $timestamp;
+        $arr['nonce_str'] = $noncestr;
+        $sign = $this->getTicketSignature($arr);
         if (!$sign)
             return false;
-        $signPackage = array(
-            "cardType" => $card_type,
-            "cardId" => $card_id,
-            "shopId" => $location_id,         //location_id就是shopId
-            "nonceStr" => $noncestr,
-            "timestamp" => $timestamp,
-            "cardSign" => $sign
-        );
-        return $signPackage;
+        $arr['signature'] = $sign;
+        unset($arr['api_ticket']);
+        return $arr;
+
+    }
+
+    /**
+     * 获取拉起卡券列表签名
+     * @param array $arr shopId|cardType|cardId
+     * @param int $timestamp
+     * @param string $noncestr
+     * @param string $appid
+     * @return array|bool
+     */
+    public function getChooseCardSign($arr = [], $timestamp = 0, $noncestr = '', $appid = '')
+    {
+        if (!$this->api_ticket && !$this->getJsCardTicket($appid)) return false;
+        if (!$timestamp)
+            $timestamp = time();
+        if (!$noncestr)
+            $noncestr = $this->generateNonceStr();
+        $arr['app_id']=$this->appid;
+        $arr['api_ticket'] = $this->api_ticket;
+        $arr['timestamp'] = $timestamp;
+        $arr['nonce_str'] = $noncestr;
+        $sign = $this->getTicketSignature($arr);
+        if (!$sign)
+            return false;
+        $arr['signature'] = $sign;
+        unset($arr['api_ticket']);
+        return $arr;
     }
 
     /**
@@ -3665,6 +3688,31 @@ class Wechat
                 return false;
             }
             return true;
+        }
+        return false;
+    }
+
+    /**
+     * 拉取会员卡信息（积分查询）
+     * @param $card_id
+     * @param $code
+     * @return bool|mixed
+     */
+    public function memberCardGetUserInfo($card_id,$code){
+        $data = array(
+            'code' => $code,
+            'card_id' => $card_id,
+        );
+        if (!$this->access_token && !$this->checkAuth()) return false;
+        $result = $this->http_post(self::API_BASE_URL_PREFIX . self::CARD_MEMBERCARD_USERINFO_GET . 'access_token=' . $this->access_token, self::json_encode($data));
+        if ($result) {
+            $json = json_decode($result, true);
+            if (!$json || !empty($json['errcode'])) {
+                $this->errCode = $json['errcode'];
+                $this->errMsg = $json['errmsg'];
+                return false;
+            }
+            return $json;
         }
         return false;
     }
